@@ -3,7 +3,8 @@
 # approved/hardened image if required.
 # Must be Debian/Ubuntu-based (apt-get compatible).
 # ---------------------------------------------
-FROM debian:bookworm-slim
+# Verified 2026-10-02; multi-platform index. Refresh this pin during patch reviews.
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 
 # Chromium runs with its real user-namespace sandbox. The runtime must grant
 # only CAP_SYS_ADMIN (see docker-compose.yml and README Security section);
@@ -12,7 +13,10 @@ FROM debian:bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
 ENV DISPLAY=:99
 
-RUN apt-get update && apt-get install -y \
+# Upgrade inherited packages too: installing browser dependencies alone can leave
+# older base-image packages untouched. Rebuild with --pull --no-cache for patches.
+# Omit optional desktop recommendations; retain all required runtime dependencies.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     chromium \
     openbox \
     xvfb \
