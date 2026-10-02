@@ -37,6 +37,12 @@ Build and run locally from the repository source:
 docker compose up -d --build
 ```
 
+### Option 3: Build & Push to Docker Hub
+
+```bash
+docker buildx build --platform linux/amd64 -t suhailtaj/agent-browser-box:latest -t suhailtaj/agent-browser-box:v1 . --push
+```
+
 ### Verify Readiness
 
 Once running via either option, check the CDP endpoint:
