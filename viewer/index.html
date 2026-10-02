@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Agent Browser Box</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      /* Prevent native mobile selections and callouts on the viewer itself */
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+    }
+
+    #screen {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      user-select: none;
+      -webkit-user-select: none;
+      outline: none; /* remove focus ring */
+    }
+
+    /* We removed the aggressive CSS overrides that stretched the canvas.
+       noVNC will now properly preserve aspect ratio via letterboxing. */
+    #touch-input-layer {
+      display: none;
+      position: absolute;
+      inset: 0;
+      z-index: 15;
+      touch-action: none;
+      overscroll-behavior: none;
+      -webkit-user-drag: none;
+      -webkit-touch-callout: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    @media (pointer: coarse), (hover: none) {
+      #touch-input-layer { display: block; }
+    }
+    .touch-device #touch-input-layer { display: block; }
+
+    #touch-cursor {
+      position: absolute;
+      z-index: 20;
+      width: 16px;
+      height: 20px;
+      /* Compact desktop-style arrow; its tip stays at the touch target. */
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 20'%3E%3Cpath d='M1 1v15l4-4 3 7 3-1.4-3-6.6h6z' fill='%23111' stroke='white' stroke-width='1' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-size: contain;
+      background-repeat: no-repeat;
+      pointer-events: none;
+      display: none; /* Hidden until first touch */
+    }
+    /* Keep the touch target visible after the first touch. */
+    #touch-cursor.visible { display: block; }
+
+    /* Hidden virtual keyboard capture */
+    #hidden-input {
+      position: fixed;
+      left: 0;
+      bottom: 0;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      border: 0;
+      opacity: 0.01;
+      z-index: -1;
+      resize: none;
+      font-size: 16px;
+    }
+
+    #keyboard-btn {
+      display: none;
+      position: fixed;
+      bottom: 12px;
+      right: 12px;
+      z-index: 100;
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: #f8fafc;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+      backdrop-filter: blur(8px);
+    }
+    .touch-device #keyboard-btn { display: flex; }
+    #keyboard-btn svg { width: 20px; height: 20px; }
+    #keyboard-btn:active { background: rgba(30, 41, 59, 0.95); }
+    #keyboard-btn[aria-pressed="true"] { background: rgba(37, 99, 235, 0.9); }
+
+    #escape-hint {
+      position: fixed;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(15, 23, 42, 0.85);
+      color: rgba(255, 255, 255, 0.8);
+      padding: 8px 16px;
+      border-radius: 6px;
+      font: 13px system-ui, sans-serif;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.3s;
+      z-index: 50;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+    }
+    #escape-hint.show { opacity: 1; }
+
+    #reconnect-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(4px);
+    }
+    #reconnect-overlay.visible { display: flex; }
+    .reconnect-box {
+      background: #1e293b;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 12px;
+      padding: 28px 36px;
+      text-align: center;
+      color: #f8fafc;
+      font-family: system-ui, sans-serif;
+    }
+    .reconnect-box p { font-size: 14px; color: #94a3b8; margin-bottom: 16px; }
+    .reconnect-box button {
+      background: #3b82f6; color: #fff; border: none; padding: 8px 20px;
+      border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    .reconnect-box button:hover { background: #2563eb; }
+  </style>
+</head>
+<body>
+
+  <div id="screen" tabindex="0" aria-label="Remote browser" draggable="false">
+    <div id="touch-input-layer" aria-hidden="true" draggable="false"></div>
+    <div id="touch-cursor" aria-hidden="true" draggable="false"></div>
+  </div>
+
+  <textarea id="hidden-input" aria-label="Remote keyboard input"
+            autocapitalize="off" autocomplete="off" autocorrect="off"
+            spellcheck="false" enterkeyhint="enter" tabindex="-1"></textarea>
+
+  <button id="keyboard-btn" aria-label="Toggle Keyboard">
+    <svg viewBox="0 0 24 24" fill="currentColor">
+      <path d="M20 5H4C2.89 5 2 5.89 2 7V17C2 18.11 2.89 19 4 19H20C21.11 19 22 18.11 22 17V7C22 5.89 21.11 5 20 5ZM20 17H4V7H20V17ZM11 8H13V10H11V8ZM11 11H13V13H11V11ZM8 8H10V10H8V8ZM8 11H10V13H8V11ZM5 8H7V10H5V8ZM5 11H7V13H5V11ZM14 8H16V10H14V8ZM14 11H16V13H14V11ZM17 8H19V10H17V8ZM17 11H19V13H17V11ZM8 14H16V16H8V14Z" />
+    </svg>
+  </button>
+
+  <div id="escape-hint">Press Escape twice to release keyboard focus</div>
+
+  <div id="reconnect-overlay" role="dialog" aria-modal="true" aria-label="Connection lost">
+    <div class="reconnect-box">
+      <p id="disconnect-msg">Connection lost. Click to reconnect.</p>
+      <button id="reconnect-btn" type="button">Reconnect</button>
+    </div>
+  </div>
+
+  <script type="module">
+    import RFB from '/core/rfb.js';
+
+    const screen  = document.getElementById('screen');
+    const overlay = document.getElementById('reconnect-overlay');
+    const msg     = document.getElementById('disconnect-msg');
+    const btn     = document.getElementById('reconnect-btn');
+    const touchCursor = document.getElementById('touch-cursor');
+    const touchLayer = document.getElementById('touch-input-layer');
+    const hiddenInput = document.getElementById('hidden-input');
+    const keyboardBtn = document.getElementById('keyboard-btn');
+    const escapeHint = document.getElementById('escape-hint');
+
+    const isTouchDevice = navigator.maxTouchPoints > 0 || 'ontouchstart' in window;
+    if (isTouchDevice) {
+      document.documentElement.classList.add('touch-device');
+    }
+
+    let rfb;
+    let reconnectTimer;
+    
+    function wsUrl() {
+      const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+      return `${scheme}://${window.location.host}/websockify`;
+    }
+
+    function connect() {
+      overlay.classList.remove('visible');
+      clearTimeout(reconnectTimer);
+      if (rfb) { try { rfb.disconnect(); } catch (_) {} }
+
+      rfb = new RFB(screen, wsUrl());
+      rfb.scaleViewport = true;
+      rfb.resizeSession = false;
+      rfb.viewOnly      = false;
+      rfb.focusOnClick  = true; // This handles focusing the canvas on desktop clicks naturally
+
+      rfb.addEventListener('connect', () => {
+        overlay.classList.remove('visible');
+        rfb.focus();
+      });
+
+      rfb.addEventListener('disconnect', (e) => {
+        msg.textContent = e.detail?.clean ? 'Session ended. Reconnecting…' : 'Connection lost. Retrying…';
+        overlay.classList.add('visible');
+        reconnectTimer = setTimeout(connect, 3000);
+      });
+      rfb.addEventListener('securityfailure', () => {
+        msg.textContent = 'Security failure.';
+        overlay.classList.add('visible');
+      });
+    }
+
+    btn.addEventListener('click', connect);
+
+    // --- Keyboard Handling (Desktop & Mobile) ---
+
+    // Toggle on-screen keyboard on mobile
+    let keyboardOpen = false;
+    function setKeyboardRequested(open) {
+      keyboardOpen = open;
+      keyboardBtn.setAttribute('aria-pressed', String(open));
+      if (rfb) rfb.focusOnClick = !open;
+    }
+    setKeyboardRequested(false);
+    // Preserve textarea focus until click decides whether to close it.
+    keyboardBtn.addEventListener('pointerdown', (e) => e.preventDefault());
+    keyboardBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (keyboardOpen) {
+        setKeyboardRequested(false);
+        hiddenInput.blur();
+        if (rfb) rfb.focus();
+      } else {
+        // Focus synchronously within the user's gesture, never after a network reply.
+        setKeyboardRequested(true);
+        hiddenInput.focus({ preventScroll: true });
+      }
+    });
+    hiddenInput.addEventListener('focus', () => setKeyboardRequested(true));
+    hiddenInput.addEventListener('blur', () => setKeyboardRequested(false));
+
+    // Desktop Keyboard Capture scoped to Canvas
+    let lastEscape = 0;
+    let hintTimeout;
+    let mobileHintShown = false;
+    screen.addEventListener('focusin', () => {
+      escapeHint.textContent = 'Press Esc twice to release keyboard';
+      escapeHint.classList.add('show');
+      clearTimeout(hintTimeout);
+      hintTimeout = setTimeout(() => escapeHint.classList.remove('show'), 3000);
+    });
+
+    screen.addEventListener('keydown', (e) => {
+      if (!rfb) return;
+      if (document.activeElement !== screen.querySelector('canvas')) return;
+
+      // 1. Escape hatch
+      if (e.key === 'Escape') {
+        const now = performance.now();
+        if (now - lastEscape < 300) {
+          rfb.blur();
+          document.body.focus();
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+        lastEscape = now;
+      } else {
+        lastEscape = 0;
+      }
+
+      // 2. Mac Cmd to Ctrl mapping for remote Linux session
+      if (e.metaKey && ['a', 'c', 'v', 'x', 'z'].includes(e.key.toLowerCase())) {
+        e.preventDefault();
+        e.stopPropagation(); // Hide this keydown from noVNC so it doesn't send Meta
+        
+        const isShift = e.shiftKey;
+        const keyChar = e.key.toLowerCase();
+        const CTRL = 0xFFE3, SHIFT = 0xFFE1;
+        
+        rfb.sendKey(CTRL, 'ControlLeft', true);
+        if (isShift) rfb.sendKey(SHIFT, 'ShiftLeft', true);
+        
+        const keysym = keyChar.codePointAt(0);
+        rfb.sendKey(keysym, `Key${keyChar.toUpperCase()}`, true);
+        rfb.sendKey(keysym, `Key${keyChar.toUpperCase()}`, false);
+        
+        if (isShift) rfb.sendKey(SHIFT, 'ShiftLeft', false);
+        rfb.sendKey(CTRL, 'ControlLeft', false);
+      }
+    }, { capture: true });
+
+    // Hide the keyup of the Meta sequence from noVNC as well
+    screen.addEventListener('keyup', (e) => {
+      if (document.activeElement !== screen.querySelector('canvas')) return;
+      if (e.metaKey && ['a', 'c', 'v', 'x', 'z'].includes(e.key.toLowerCase())) {
+        e.stopPropagation();
+      }
+    }, { capture: true });
+
+    // Mobile Virtual Keyboard Handling
+    let isComposing = false;
+    let skipComposedInput = false;
+
+    function sendMobileText(text) {
+      if (!rfb || !text) return;
+      for (const char of text) rfb.sendKey(char.codePointAt(0));
+    }
+    
+    hiddenInput.addEventListener('compositionstart', () => { isComposing = true; });
+    hiddenInput.addEventListener('compositionend', (e) => {
+      isComposing = false;
+      sendMobileText(e.data || '');
+      skipComposedInput = true;
+      setTimeout(() => { skipComposedInput = false; }, 0);
+      hiddenInput.value = ''; // Always clear to prevent accumulation
+    });
+
+    hiddenInput.addEventListener('beforeinput', (e) => {
+      if (!rfb || isComposing || e.isComposing) return;
+      const special = {
+        deleteContentBackward: [0xFF08, 'Backspace'],
+        deleteContentForward: [0xFFFF, 'Delete'],
+        insertLineBreak: [0xFF0D, 'Enter'],
+        insertParagraph: [0xFF0D, 'Enter'],
+      }[e.inputType];
+      if (!special) return;
+      e.preventDefault();
+      rfb.sendKey(special[0], special[1]);
+      hiddenInput.value = '';
+    });
+
+    hiddenInput.addEventListener('input', (e) => {
+      if (!rfb || isComposing) return;
+      if (skipComposedInput) {
+        skipComposedInput = false;
+        hiddenInput.value = '';
+        return;
+      }
+      
+      if (e.inputType === 'insertText' || e.inputType === 'insertCompositionText') {
+        sendMobileText(e.data || hiddenInput.value);
+      } else if (e.inputType === 'insertLineBreak') {
+        rfb.sendKey(0xFF0D, 'Enter', true);
+        rfb.sendKey(0xFF0D, 'Enter', false);
+      } else if (e.inputType === 'deleteContentBackward') {
+        rfb.sendKey(0xFF08, 'Backspace', true);
+        rfb.sendKey(0xFF08, 'Backspace', false);
+      } else if (e.inputType === 'deleteWordBackward') {
+        rfb.sendKey(0xFFE3, 'ControlLeft', true);
+        rfb.sendKey(0xFF08, 'Backspace', true);
+        rfb.sendKey(0xFF08, 'Backspace', false);
+        rfb.sendKey(0xFFE3, 'ControlLeft', false);
+      }
+      hiddenInput.value = '';
+    });
+
+    hiddenInput.addEventListener('keydown', (e) => {
+      if (!rfb || isComposing) return;
+      
+      // Ignore mobile composition keydowns, rely on input event
+      if (e.keyCode === 229 || e.key === 'Unidentified') return;
+      
+      const keysymsMap = {
+        'Backspace': 0xFF08,
+        'Enter': 0xFF0D,
+        'Tab': 0xFF09,
+        'Escape': 0xFF1B,
+        'ArrowUp': 0xFF52,
+        'ArrowDown': 0xFF54,
+        'ArrowLeft': 0xFF51,
+        'ArrowRight': 0xFF53,
+        'Delete': 0xFFFF
+      };
+      
+      if (keysymsMap[e.key]) {
+        rfb.sendKey(keysymsMap[e.key], e.code, true);
+        rfb.sendKey(keysymsMap[e.key], e.code, false);
+        e.preventDefault();
+        return;
+      }
+      
+      // Mac translation for physical keyboards attached to mobile
+      if (e.metaKey && ['a', 'c', 'v', 'x', 'z'].includes(e.key.toLowerCase())) {
+        if (['a', 'z'].includes(e.key.toLowerCase())) e.preventDefault();
+        const isShift = e.shiftKey;
+        const keyChar = e.key.toLowerCase();
+        const CTRL = 0xFFE3, SHIFT = 0xFFE1;
+        
+        rfb.sendKey(CTRL, 'ControlLeft', true);
+        if (isShift) rfb.sendKey(SHIFT, 'ShiftLeft', true);
+        
+        const keysym = keyChar.codePointAt(0);
+        rfb.sendKey(keysym, `Key${keyChar.toUpperCase()}`, true);
+        rfb.sendKey(keysym, `Key${keyChar.toUpperCase()}`, false);
+        
+        if (isShift) rfb.sendKey(SHIFT, 'ShiftLeft', false);
+        rfb.sendKey(CTRL, 'ControlLeft', false);
+      }
+    });
+
+    // --- Fullscreen on landscape ---
+    function checkOrientation() {
+      const isLandscape = window.innerWidth > window.innerHeight;
+      if (isLandscape && !document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      }
+    }
+    window.addEventListener('orientationchange', () => setTimeout(checkOrientation, 100));
+    window.addEventListener('resize', () => {
+      if (window.innerWidth > window.innerHeight && document.documentElement.classList.contains('touch-device')) {
+        checkOrientation();
+      }
+    });
+
+    // --- Touch Mobile Mapping ---
+    const touches = new Map();
+    const CURSOR_OFFSET = { x: 28, y: -64 };
+    const DRAG_THRESHOLD = 8;
+    const DOUBLE_TAP_MS = 300;
+    const DOUBLE_TAP_DISTANCE = 30;
+    
+    let primaryTouch = null;
+    let dragActive = false;
+    let clickDragActive = false;
+    let multiTouch = false;
+    let lastTap = null;
+    let cursorPosition = null;
+
+    function getLocalTarget(clientX, clientY) {
+      const b = screen.getBoundingClientRect();
+      return {
+        x: Math.min(b.width - 1, Math.max(0, clientX - b.left + CURSOR_OFFSET.x)),
+        y: Math.min(b.height - 1, Math.max(0, clientY - b.top + CURSOR_OFFSET.y)),
+      };
+    }
+
+    function clampTarget(target) {
+      const b = screen.getBoundingClientRect();
+      const rect = screen.querySelector('canvas')?.getBoundingClientRect();
+      // Keep the visible tip on the actual framebuffer, including letterboxing.
+      const left = rect?.width ? rect.left - b.left : 0;
+      const top = rect?.height ? rect.top - b.top : 0;
+      const right = rect?.width ? rect.right - b.left - 1 : b.width - 1;
+      const bottom = rect?.height ? rect.bottom - b.top - 1 : b.height - 1;
+      return {
+        x: Math.min(right, Math.max(left, target.x)),
+        y: Math.min(bottom, Math.max(top, target.y)),
+      };
+    }
+
+    function getRemoteCoords(localX, localY) {
+      const canvas = screen.querySelector('canvas');
+      if (!canvas || !rfb || !rfb._display) return null;
+      const rect = canvas.getBoundingClientRect();
+      const bounds = screen.getBoundingClientRect();
+      if (!rect.width || !rect.height) return null;
+      // _sendMouse calls Display.absX/absY itself. Supply canvas CSS pixels,
+      // not framebuffer pixels, or noVNC applies viewport scaling twice.
+      return {
+        x: Math.max(0, Math.min(rect.width - 1, localX + bounds.left - rect.left)),
+        y: Math.max(0, Math.min(rect.height - 1, localY + bounds.top - rect.top)),
+      };
+    }
+
+    function sendPointer(target, mask) {
+      const coords = getRemoteCoords(target.x, target.y);
+      if (coords && rfb && rfb._sendMouse) {
+        rfb._sendMouse(coords.x, coords.y, mask);
+      }
+    }
+
+    function clickAt(target, mask = 0x1) {
+      sendPointer(target, 0);
+      sendPointer(target, mask);
+      sendPointer(target, 0);
+    }
+
+    function showCursor(target) {
+      cursorPosition = clampTarget(target);
+      touchCursor.style.left = `${cursorPosition.x}px`;
+      touchCursor.style.top = `${cursorPosition.y}px`;
+      touchCursor.classList.add('visible');
+    }
+
+    function onTouchDown(e) {
+      if (e.pointerType !== 'touch') return;
+      e.preventDefault(); // Prevents native mobile drag, text selection, etc.
+      // Letterboxing is not remote content. Do not click a clamped edge there.
+      const rect = screen.querySelector('canvas')?.getBoundingClientRect();
+      if (!rect || !rect.width || !rect.height || e.clientX < rect.left ||
+          e.clientX >= rect.right || e.clientY < rect.top || e.clientY >= rect.bottom) return;
+      try { touchLayer.setPointerCapture(e.pointerId); } catch (_) {}
+      
+      // Keep hidden input focused if it was open, otherwise ensure screen retains focus
+      if (!keyboardOpen && document.activeElement !== hiddenInput) {
+        if (rfb) rfb.focus();
+      }
+      
+      // Trackpad interaction: the first touch places the pointer above the
+      // finger; later swipes move it relatively and taps click its visible tip.
+      if (!cursorPosition) showCursor(getLocalTarget(e.clientX, e.clientY));
+      else showCursor(cursorPosition); // Re-clamp after keyboard/viewport resize.
+      const point = {
+        clientX: e.clientX,
+        clientY: e.clientY,
+        startX: e.clientX,
+        startY: e.clientY,
+        cursorStartX: cursorPosition.x,
+        cursorStartY: cursorPosition.y,
+      };
+      touches.set(e.pointerId, point);
+
+      if (touches.size === 1) {
+        primaryTouch = e.pointerId;
+        dragActive = false;
+        multiTouch = false;
+        
+        const now = performance.now();
+        clickDragActive = !!lastTap &&
+          now - lastTap.time <= DOUBLE_TAP_MS &&
+          Math.hypot(e.clientX - lastTap.fingerX, e.clientY - lastTap.fingerY) <= DOUBLE_TAP_DISTANCE;
+        
+        showCursor(cursorPosition);
+      } else if (touches.size === 2) {
+        multiTouch = true;
+        if (dragActive) sendPointer(cursorPosition, 0);
+        dragActive = false;
+      }
+    }
+
+    function onTouchMove(e) {
+      if (e.pointerType !== 'touch' || !touches.has(e.pointerId)) return;
+      e.preventDefault();
+      const point = touches.get(e.pointerId);
+      point.clientX = e.clientX;
+      point.clientY = e.clientY;
+
+      if (touches.size >= 2) return;
+      if (e.pointerId !== primaryTouch || multiTouch) return;
+      
+      const target = clampTarget({
+        x: point.cursorStartX + e.clientX - point.startX,
+        y: point.cursorStartY + e.clientY - point.startY,
+      });
+      showCursor(target);
+      
+      if (!dragActive && Math.hypot(e.clientX - point.startX, e.clientY - point.startY) >= DRAG_THRESHOLD) {
+        dragActive = true;
+        if (clickDragActive) sendPointer(clampTarget({ x: point.cursorStartX, y: point.cursorStartY }), 0x1);
+        sendPointer(target, clickDragActive ? 0x1 : 0);
+      } else if (dragActive) {
+        sendPointer(target, clickDragActive ? 0x1 : 0);
+      }
+    }
+
+    function onTouchEnd(e) {
+      if (e.pointerType !== 'touch' || !touches.has(e.pointerId)) return;
+      e.preventDefault();
+      const ending = touches.get(e.pointerId);
+      const target = cursorPosition;
+      const wasMulti = multiTouch;
+      const touchCount = touches.size;
+
+      if (!wasMulti && e.pointerId === primaryTouch) {
+        if (dragActive) {
+          sendPointer(target, 0);
+          lastTap = null;
+        } else {
+          const now = performance.now();
+          if (clickDragActive) {
+            clickAt(target, 0x1);
+            lastTap = null;
+          } else {
+            clickAt(target, 0x1);
+            lastTap = { time: now, fingerX: ending.clientX, fingerY: ending.clientY };
+          }
+          if (keyboardOpen) hiddenInput.focus({ preventScroll: true });
+          else if (!mobileHintShown) {
+            mobileHintShown = true;
+            escapeHint.textContent = 'Tap ⌨ to type. Tap it again to close the keyboard.';
+            escapeHint.classList.add('show');
+            clearTimeout(hintTimeout);
+            hintTimeout = setTimeout(() => escapeHint.classList.remove('show'), 3500);
+          }
+        }
+      }
+
+      touches.delete(e.pointerId);
+      
+      if (wasMulti && touchCount === 2) {
+        clickAt(target, 0x4);
+      }
+      
+      if (touches.size === 0) {
+        primaryTouch = null;
+        dragActive = false;
+        multiTouch = false;
+      }
+    }
+
+    function onTouchCancel(e) {
+      if (e.pointerType !== 'touch' || !touches.has(e.pointerId)) return;
+      e.preventDefault();
+      if (dragActive && cursorPosition) sendPointer(cursorPosition, 0);
+      touches.clear();
+      primaryTouch = null;
+      dragActive = false;
+      multiTouch = false;
+      if (cursorPosition) showCursor(cursorPosition);
+    }
+
+    const touchListenerOptions = { passive: false };
+    touchLayer.addEventListener('pointerdown', onTouchDown, touchListenerOptions);
+    touchLayer.addEventListener('pointermove', onTouchMove, touchListenerOptions);
+    touchLayer.addEventListener('pointerup', onTouchEnd, touchListenerOptions);
+    touchLayer.addEventListener('pointercancel', onTouchCancel, touchListenerOptions);
+    screen.addEventListener('dragstart', e => e.preventDefault());
+    screen.addEventListener('selectstart', e => e.preventDefault());
+    screen.addEventListener('contextmenu', e => { if (e.pointerType === 'touch') e.preventDefault(); });
+    
+    connect();
+  </script>
+</body>
+</html>

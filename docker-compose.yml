@@ -1,0 +1,20 @@
+services:
+  agent-browser-box:
+    build: .
+    container_name: ${CONTAINER_NAME:-agent-browser-box}
+    restart: unless-stopped
+    shm_size: "2gb"
+    # Chromium's user-namespace sandbox needs this capability because the
+    # default Docker seccomp profile blocks unprivileged userns creation.
+    # SYS_ADMIN is security-sensitive; do not add any broader privileges.
+    cap_add:
+      - SYS_ADMIN
+    ports:
+      - "127.0.0.1:${CDP_PORT:-9222}:9222"
+      - "${NOVNC_PORT:-6080}:6080"
+    networks:
+      - sandbox-net
+
+networks:
+  sandbox-net:
+    driver: bridge
